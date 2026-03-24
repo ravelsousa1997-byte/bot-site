@@ -1,0 +1,23 @@
+name: Load Test
+
+on:
+  workflow_dispatch:  # roda manualmente pelo GitHub
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install httpx[http2]
+
+      - name: Rodar teste de carga
+        run: python load_test.py
