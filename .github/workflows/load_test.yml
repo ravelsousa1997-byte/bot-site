@@ -1,0 +1,79 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar dependencias
+        run: pip install httpx[http2]
+
+      - name: Rodar teste de carga
+        run: |
+          python3 - <<'PYEOF'
+          import asyncio, httpx, time
+          from dataclasses import dataclass, field
+          from collections import defaultdict
+
+          URL          = "https://www.andreavermont.online/tradutoralmas"
+          TOTAL_USERS  = 5000
+          RAMP_UP_SEC  = 10
+          DURATION_SEC = 60
+          TIMEOUT_SEC  = 10
+
+          @dataclass
+          class Stats:
+              success: int = 0
+              failed: int = 0
+              total: int = 0
+              latencies: list = field(default_factory=list)
+              status_codes: dict = field(default_factory=lambda: defaultdict(int))
+              start_time: float = field(default_factory=time.time)
+
+          stats = Stats()
+          stop_event = asyncio.Event()
+
+          async def worker(client):
+              while not stop_event.is_set():
+                  t0 = time.monotonic()
+                  try:
+                      r = await client.get(URL, timeout=TIMEOUT_SEC)
+                      stats.latencies.append(time.monotonic() - t0)
+                      stats.status_codes[r.status_code] += 1
+                      if 200 <= r.status_code < 400: stats.success += 1
+                      else: stats.failed += 1
+                  except: stats.failed += 1
+                  finally: stats.total += 1
+
+          async def reporter():
+              last = 0
+              while not stop_event.is_set():
+                  await asyncio.sleep(5)
+                  elapsed = time.time() - stats.start_time
+                  rps = (stats.total - last) / 5
+                  last = stats.total
+                  avg = (sum(stats.latencies[-500:])/len(stats.latencies[-500:])*1000) if stats.latencies else 0
+                  print(f"[{elapsed:5.0f}s] total={stats.total:>7} ok={stats.success:>7} err={stats.failed:>5} rps={rps:>6.0f} avg={avg:>6.1f}ms status={dict(stats.status_codes)}", flush=True)
+
+          async def main():
+              print(f"URL: {URL} | Usuarios: {TOTAL_USERS} | Duracao: {DURATION_SEC}s")
+              limits = httpx.Limits(max_connections=TOTAL_USERS+100, max_keepalive_connections=TOTAL_USERS)
+              async with httpx.AsyncClient(limits=limits, http2=True) as client:
+                  rep = asyncio.create_task(reporter())
+                  tasks = [asyncio.create_task(worker(client)) for _ in range(TOTAL_USERS)]
+                  await asyncio.sleep(DURATION_SEC)
+                  stop_event.set()
+                  await asyncio.gather(*tasks, return_exceptions=True)
+                  rep.cancel()
+              lats = sorted(stats.latencies)
+              elapsed = time.time() - stats.start_time
+              print("\n" + "="*60)
+              print(f"Total: {stats.total} | Sucesso: {stats.success} | Erros: {stats.failed}")
+              print(f"RPS medio: {stats.total/elapsed:.1f}")
+              print(f"p50={lats[int(len(lats)*.5)]*1000:.0f}ms p90={lats[int(len(lats)*.9)]*1000:.0f}ms p99={lats[int(len(lats)*.99)]*1000:.0f}ms" if lats else "sem dados")
+              print(f"Status: {dict(stats.status_codes)}")
+
+          asyncio.run(main())
+          PYEOF
